@@ -5,8 +5,8 @@
 > I am not responsible for any damaged devices as a result of running
 > this code. Use at your own discretion.
 > 
-> The module is mostly completed, the only thing that doesn't work is the PS button.
-> This code was partly vibecoded using Claude, as I do not know C, but I reverse engineered the correct inputs.
+> The module is mostly completed, the only thing that doesn't work is the PS button. If anyone feels like contributing to finish it, go ahead, but sadly I can't anymore as I've upgraded to a Logitech G29.
+> This code was partially vibecoded using Claude, as I do not know C (I am learning it now!), but I reverse engineered the correct inputs.
 > This driver is based on https://github.com/aregnak/hid-t80.
 
 ## Description
