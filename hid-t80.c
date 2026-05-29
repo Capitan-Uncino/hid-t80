@@ -16,22 +16,45 @@ struct t80_data {
     u32 center_sum;
 };
 
-static int t80_input_configured(struct hid_device *hdev, struct hid_input *hidinput)
+// 1. NEW PROBE FUNCTION
+static int t80_probe(struct hid_device *hdev, const struct hid_device_id *id)
 {
-    struct input_dev *input = hidinput->input;
     struct t80_data *t80;
+    int ret;
 
-    // Allocate per-device data for auto-calibration
-    t80 = kzalloc(sizeof(struct t80_data), GFP_KERNEL);
+    // Use devm_kzalloc: memory is automatically freed when the device unbinds
+    t80 = devm_kzalloc(&hdev->dev, sizeof(struct t80_data), GFP_KERNEL);
     if (!t80)
         return -ENOMEM;
-    
+
     t80->center_value = 32767;  // Default center
     t80->calibrated = false;
     t80->sample_count = 0;
     t80->center_sum = 0;
-    
+
     hid_set_drvdata(hdev, t80);
+
+    // Initialize HID hardware parsing
+    ret = hid_parse(hdev);
+    if (ret) {
+        hid_err(hdev, "HID parse failed\n");
+        return ret;
+    }
+
+    // Start HID hardware
+    ret = hid_hw_start(hdev, HID_CONNECT_DEFAULT);
+    if (ret) {
+        hid_err(hdev, "HID hw start failed\n");
+        return ret;
+    }
+
+    return 0;
+}
+
+// 2. CLEANED UP CONFIGURATION
+static int t80_input_configured(struct hid_device *hdev, struct hid_input *hidinput)
+{
+    struct input_dev *input = hidinput->input;
 
     __clear_bit(EV_ABS, input->evbit);
     memset(input->evbit, 0, sizeof(input->evbit));
@@ -86,7 +109,6 @@ static int t80_raw_event(struct hid_device *hdev, struct hid_report *report,
         return 0;
 
     if (list_empty(&hdev->inputs)) {
-        hid_err(hdev, "no inputs found\n");
         return -ENODEV;
     }
 
@@ -97,16 +119,13 @@ static int t80_raw_event(struct hid_device *hdev, struct hid_report *report,
     if (!t80)
         return -ENODEV;
 
-    // Get raw steering value
     raw_steering = (data[44] << 8) | data[43];
     gas = (data[46] << 8) | data[45];
     brake = (data[48] << 8) | data[47];
 
-    // Auto-calibration: collect samples when wheel seems to be at rest
     if (!t80->calibrated && t80->sample_count < 100) {
         static u16 last_steering = 0;
         
-        // If steering hasn't changed much, assume it's at center
         if (abs((s16)(raw_steering - last_steering)) < 100) {
             t80->center_sum += raw_steering;
             t80->sample_count++;
@@ -122,7 +141,6 @@ static int t80_raw_event(struct hid_device *hdev, struct hid_report *report,
         last_steering = raw_steering;
     }
 
-    // Apply center offset to steering
     if (raw_steering >= t80->center_value) {
         steering = 32768 + ((raw_steering - t80->center_value) * 32767) / (65535 - t80->center_value);
     } else {
@@ -133,15 +151,9 @@ static int t80_raw_event(struct hid_device *hdev, struct hid_report *report,
     input_report_abs(input, ABS_Y, gas);
     input_report_abs(input, ABS_Z, brake);
 
-    u8 b5 = data[5], b6 = data[6], b7 = data[7], b8 = data[8], b9 = data[9];
+    u8 b5 = data[5], b6 = data[6];
 
-    // DEBUG: Uncomment this to see what buttons do what
-     //if (b5 || b6 || b7 || b8 || b9) {
-     //    hid_info(hdev, "Buttons: b5=%02x b6=%02x b7=%02x b8=%02x b9=%02x\n", 
-     //             b5, b6, b7, b8, b9);
-     //}
-    // Parse D-pad as hat switch
-    u8 dpad = b5 & 0x0F;  // 0 = up, 1 = up+right, ..., 7 = up+left, 8 = neutral
+    u8 dpad = b5 & 0x0F; 
     input_report_key(input, BTN_DPAD_UP,    dpad == 0 || dpad == 1 || dpad == 7);
     input_report_key(input, BTN_DPAD_RIGHT, dpad == 1 || dpad == 2 || dpad == 3);
     input_report_key(input, BTN_DPAD_DOWN,  dpad == 3 || dpad == 4 || dpad == 5);
@@ -165,15 +177,19 @@ static int t80_raw_event(struct hid_device *hdev, struct hid_report *report,
     return 1;
 }
 
+// 3. FIXED REMOVE FUNCTION
 static void t80_remove(struct hid_device *hdev)
 {
-    struct t80_data *t80 = hid_get_drvdata(hdev);
-    kfree(t80);
+    // CRITICAL: You must stop the hardware here to release USB locks!
+    hid_hw_stop(hdev);
+    
+    // Note: No need for kfree(t80) because we used devm_kzalloc in probe
 }
 
 static struct hid_driver t80_driver = {
     .name = "t80",
     .id_table = t80_devices,
+    .probe = t80_probe,               // Added probe function
     .input_configured = t80_input_configured,
     .raw_event = t80_raw_event,
     .remove = t80_remove,
